@@ -2,8 +2,17 @@ from flask import Flask, request, render_template_string, send_file
 import yt_dlp
 import os
 import uuid
+import shutil
 
 app = Flask(__name__)
+
+# Paths for cookies
+SECRET_COOKIES_SRC = "/etc/secrets/cookies.txt"   # Render secret (read-only)
+COOKIE_COPY_PATH = "/tmp/cookies.txt"             # Writable copy for yt_dlp
+
+# Copy cookies file into /tmp if available
+if os.path.exists(SECRET_COOKIES_SRC):
+    shutil.copy(SECRET_COOKIES_SRC, COOKIE_COPY_PATH)
 
 # HTML template
 HTML = """
@@ -35,36 +44,39 @@ def download():
     url = request.form.get("url")
     choice = request.form.get("choice")
     unique_id = str(uuid.uuid4())
-    download_dir = "downloads"
+    download_dir = "/tmp/downloads"   # use /tmp because Render’s disk is read-only elsewhere
     os.makedirs(download_dir, exist_ok=True)
+
+    # Common yt_dlp options
+    base_opts = {
+        'outtmpl': f'{download_dir}/{unique_id}.%(ext)s',
+        'cookiefile': COOKIE_COPY_PATH if os.path.exists(COOKIE_COPY_PATH) else None
+    }
 
     if choice == "video":
         ydl_opts = {
+            **base_opts,
             'format': 'bestvideo+bestaudio/best',
             'merge_output_format': 'mp4',
-            'outtmpl': f'{download_dir}/{unique_id}.%(ext)s'
         }
+        expected_file = f"{download_dir}/{unique_id}.mp4"
     else:  # audio
         ydl_opts = {
+            **base_opts,
             'format': 'bestaudio/best',
-            'outtmpl': f'{download_dir}/{unique_id}.%(ext)s',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
         }
+        expected_file = f"{download_dir}/{unique_id}.mp3"
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if choice == "video":
-                filename = f"{unique_id}.mp4"
-            else:
-                filename = f"{unique_id}.mp3"
-            filepath = os.path.join(download_dir, filename)
+            ydl.extract_info(url, download=True)
 
-        return send_file(filepath, as_attachment=True)
+        return send_file(expected_file, as_attachment=True)
     except Exception as e:
         return f"Error: {str(e)}"
 
