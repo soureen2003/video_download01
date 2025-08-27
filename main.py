@@ -1,89 +1,85 @@
-from flask import Flask, request, render_template_string, send_file
-import yt_dlp
 import os
-import uuid
+import shutil
+from flask import Flask, request, send_file, render_template_string
+import yt_dlp
 
 app = Flask(__name__)
 
-# Folder for temporary downloads
-DOWNLOAD_FOLDER = "downloads"
-os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+# Copy cookies.txt to a writable directory (/tmp)
+COOKIE_SRC = "/etc/secrets/cookies.txt"
+COOKIE_DST = "/tmp/cookies.txt"
+if os.path.exists(COOKIE_SRC):
+    shutil.copy(COOKIE_SRC, COOKIE_DST)
+else:
+    COOKIE_DST = None  # fallback if no cookies provided
 
-# Path to cookies file (Render mounts secret file here if added)
-COOKIES_PATH = "/etc/secrets/cookies.txt"
-
-# Simple frontend
-HTML_TEMPLATE = """
+HTML_FORM = """
 <!DOCTYPE html>
 <html>
 <head>
     <title>YouTube Downloader</title>
 </head>
-<body style="font-family: Arial; text-align: center; margin-top: 50px;">
-    <h2>YouTube Downloader</h2>
+<body>
+    <h2>YouTube Video/Audio Downloader</h2>
     <form method="POST" action="/download">
-        <input type="text" name="url" placeholder="Enter YouTube URL" size="50" required><br><br>
+        <input type="text" name="url" placeholder="Enter YouTube URL" required>
         <select name="format">
-            <option value="video">Video</option>
-            <option value="audio">Audio Only</option>
-        </select><br><br>
+            <option value="video">Video (mp4)</option>
+            <option value="audio">Audio (mp3)</option>
+        </select>
         <button type="submit">Download</button>
     </form>
 </body>
 </html>
 """
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def home():
-    return render_template_string(HTML_TEMPLATE)
+    return render_template_string(HTML_FORM)
 
 @app.route("/download", methods=["POST"])
 def download():
-    url = request.form.get("url")
-    format_choice = request.form.get("format")
+    url = request.form["url"]
+    format_type = request.form["format"]
 
-    if not url:
-        return "No URL provided", 400
+    output_file = "/tmp/output.%(ext)s"
 
-    # Generate unique file name
-    unique_id = str(uuid.uuid4())
-    output_template = os.path.join(DOWNLOAD_FOLDER, f"{unique_id}.%(ext)s")
-
-    # yt_dlp options
     ydl_opts = {
-        "outtmpl": output_template,
+        "outtmpl": output_file,
     }
 
-    # Use cookies if available
-    if os.path.exists(COOKIES_PATH):
-        ydl_opts["cookiefile"] = COOKIES_PATH
+    if COOKIE_DST:
+        ydl_opts["cookiefile"] = COOKIE_DST
 
-    if format_choice == "audio":
-        ydl_opts["format"] = "bestaudio/best"
-        ydl_opts["postprocessors"] = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }]
+    if format_type == "audio":
+        ydl_opts.update({
+            "format": "bestaudio/best",
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
+            "outtmpl": "/tmp/output.%(ext)s",
+        })
     else:
-        ydl_opts["format"] = "best"
+        ydl_opts.update({
+            "format": "bestvideo+bestaudio/best",
+            "merge_output_format": "mp4",
+            "outtmpl": "/tmp/output.%(ext)s",
+        })
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-
-            # Adjust extension for mp3 audio
-            if format_choice == "audio":
-                filename = os.path.splitext(filename)[0] + ".mp3"
+            if format_type == "audio":
+                filename = filename.rsplit(".", 1)[0] + ".mp3"
+            else:
+                filename = filename.rsplit(".", 1)[0] + ".mp4"
 
         return send_file(filename, as_attachment=True)
-
     except Exception as e:
-        return f"Error: {str(e)}", 500
-
+        return f"Error: {str(e)}"
 
 if __name__ == "__main__":
-    # Render runs on 0.0.0.0:$PORT
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
