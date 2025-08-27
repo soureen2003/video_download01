@@ -1,45 +1,89 @@
-from fastapi import FastAPI, Form
-from fastapi.responses import FileResponse, HTMLResponse
+from flask import Flask, request, render_template_string, send_file
 import yt_dlp
 import os
+import uuid
 
-app = FastAPI()
+app = Flask(__name__)
 
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+# Folder for temporary downloads
+DOWNLOAD_FOLDER = "downloads"
+os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-def download_youtube(url, only_audio=False):
-    ydl_opts = {
-        "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
-    }
-    if only_audio:
-        ydl_opts.update({
-            "format": "bestaudio/best",
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }]
-        })
-    else:
-        ydl_opts.update({"format": "best"})
+# Path to cookies file (Render mounts secret file here if added)
+COOKIES_PATH = "/etc/secrets/cookies.txt"
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        return ydl.prepare_filename(info)
-
-@app.get("/", response_class=HTMLResponse)
-def index():
-    return """
+# Simple frontend
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>YouTube Downloader</title>
+</head>
+<body style="font-family: Arial; text-align: center; margin-top: 50px;">
     <h2>YouTube Downloader</h2>
-    <form action="/download" method="post">
-        <input type="text" name="url" placeholder="Enter YouTube URL" required>
-        <button type="submit" name="type" value="video">Download Video</button>
-        <button type="submit" name="type" value="audio">Download Audio</button>
+    <form method="POST" action="/download">
+        <input type="text" name="url" placeholder="Enter YouTube URL" size="50" required><br><br>
+        <select name="format">
+            <option value="video">Video</option>
+            <option value="audio">Audio Only</option>
+        </select><br><br>
+        <button type="submit">Download</button>
     </form>
-    """
+</body>
+</html>
+"""
 
-@app.post("/download")
-def download(url: str = Form(...), type: str = Form(...)):
-    filepath = download_youtube(url, only_audio=(type == "audio"))
-    return FileResponse(filepath, filename=os.path.basename(filepath))
+@app.route("/")
+def home():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route("/download", methods=["POST"])
+def download():
+    url = request.form.get("url")
+    format_choice = request.form.get("format")
+
+    if not url:
+        return "No URL provided", 400
+
+    # Generate unique file name
+    unique_id = str(uuid.uuid4())
+    output_template = os.path.join(DOWNLOAD_FOLDER, f"{unique_id}.%(ext)s")
+
+    # yt_dlp options
+    ydl_opts = {
+        "outtmpl": output_template,
+    }
+
+    # Use cookies if available
+    if os.path.exists(COOKIES_PATH):
+        ydl_opts["cookiefile"] = COOKIES_PATH
+
+    if format_choice == "audio":
+        ydl_opts["format"] = "bestaudio/best"
+        ydl_opts["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }]
+    else:
+        ydl_opts["format"] = "best"
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+
+            # Adjust extension for mp3 audio
+            if format_choice == "audio":
+                filename = os.path.splitext(filename)[0] + ".mp3"
+
+        return send_file(filename, as_attachment=True)
+
+    except Exception as e:
+        return f"Error: {str(e)}", 500
+
+
+if __name__ == "__main__":
+    # Render runs on 0.0.0.0:$PORT
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
